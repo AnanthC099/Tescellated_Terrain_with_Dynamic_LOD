@@ -1,0 +1,14 @@
+1. Globally declare an array of fences of pointer type VkFence (https://registry.khronos.org/vulkan/specs/latest/man/html/VkFence.html).
+   Additionally declare 2 semaphore objects of type VkSemaphore (https://registry.khronos.org/vulkan/specs/latest/man/html/VkSemaphore.html)
+2. In CreateSemaphore() UDF(User defined function) , declare, memset and initialize VkSemaphoreCreateInfo  struct (https://registry.khronos.org/vulkan/specs/latest/man/html/VkSemaphoreCreateInfo.html)
+3. Now call vkCreateSemaphore() {https://registry.khronos.org/vulkan/specs/latest/man/html/vkCreateSemaphore.html} 2 times to create our 2 semaphore objects.
+   Remember both will use same  VkSemaphoreCreateInfo struct as defined in 2nd step.
+4. In CreateFences() UDF(User defined function) declare, memset and initialize VkFenceCreateInfo struct (https://registry.khronos.org/vulkan/specs/latest/man/html/VkFenceCreateInfo.html).
+5. In this function, CreateFences() allocate our global fence array to size of swapchain image count using malloc.
+6. Now in a loop, call vkCreateFence() {https://registry.khronos.org/vulkan/specs/latest/man/html/vkCreateFence.html} to initialize our global fences array.
+7. In uninitialize(), first in a loop with swapchain image count as counter, destroy frnce array objects using vkDestroyFence() {https://registry.khronos.org/vulkan/specs/latest/man/html/vkDestroyFence.html} and then
+   actually free allocated fences array by using free().
+8. Destroy both global semaphore objects  with two separate calls to vkDestroySemaphore() {https://registry.khronos.org/vulkan/specs/latest/man/html/vkDestroySemaphore.html}.
+
+
+

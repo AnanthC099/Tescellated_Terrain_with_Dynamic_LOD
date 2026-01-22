@@ -1,0 +1,15 @@
+1. Globally declare Vulkan object of type VkPipelineLayout and initialize it to VK_NULL_HANDLE.
+2. In initialize(), declare and call UDF CreatePipelineLayout() maintaining the convention of declaring and calling it after CreatDescriptorSetLayout() and before CreateRenderPass().
+3. While writing the definition of UDF, declare, memset and initialize struct VkPipelineLayoutCreateInfo , particularly its 4 important members 
+   1. .setLayoutCount
+   2. .pSetLayouts array
+   3. .pushConstantRangeCount
+   4. .pPushConstantRanges array
+4. Then call vkCreatePipelineLayout() Vulkan API with adress of above initialized structure and get the required global Vulkan object vkPipelineLayout in its last parameter.
+5. In uninitialize, call vkDestroyPipelineLayout() Vulkan API to destroy this vkPipelineLayout Vulkan object.
+
+Notes:
+VkDescriptor to create descriptor.
+VkDescriptorSet to create descriptor set.
+VkDescriptorSetLayoutBinding structure aat VkDescriptorSetLayout dya. 
+Binding ha count  ani pBinding madhe VkDescriptorSetLayout pass kara

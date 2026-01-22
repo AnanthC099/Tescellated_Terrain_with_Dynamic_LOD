@@ -1,0 +1,6 @@
+Step1: Call vkGetDeviceQueue(https://registry.khronos.org/vulkan/specs/latest/man/html/vkGetDeviceQueue.html) using newly created vkDevice, selected family index, 
+0th queque in that selected queque family to retreive device queque.
+
+Note: Redbook madhla vakya
+When we create VkDevice , queque are automatically created
+and hence when we destroy VkDevice , queque's automatically get destroyed.

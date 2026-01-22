@@ -1,0 +1,46 @@
+1. Start a loop with swapchainImageCount as counter.
+2. Inside loop, call vkResetCommandBuffer to reset contents of command buffers.
+3. Then declare, memset and initialize VkCommandBufferBeginInfo struct.
+4. Call vkBeginCommandBuffer() to record different Vulkan drawing related commands.
+   Do Error Checking.
+5. Declare, memset and initialize struct array of VkClearValue type
+   Remember internally this is union.
+   Our array willl be of 1 element.
+   This number depends on number of attachments to framebuffer.
+   As we have only 1 attachment i.e color attachment, hence we have array of 1 element.
+   
+   Note:
+   This union has two values for color and color
+   typedef union VkClearValue {
+    VkClearColorValue           color;
+    VkClearDepthStencilValue    depthStencil;
+   } VkClearValue;
+   As implied from union , when we use color, depthStencil is meaningless and when we use depthStencil, color is meaningless. 
+
+   As above seen , we have 2 members , .color and .depthStencil.
+   In our color attachment, .color member is meaningful and .depthStencil member is meaninglessgive no value to it).
+   When depth attachment , .dpethStencil member is meaningful, .color member is meaningless(give no value to it). {in future}
+	
+	To this .color member, we need to assign VkClearColorValue struct.
+	To do this , declare globally VkClearColorValue struct variable and memset, initialize it in our initialize().
+	Remember we are going to clear .color member of VkClearValue struct by VkClearColorValue struct, because in Step 16 of RenderPass we specified .loadOp member of VkAttachmentDescription struct to VK_ATTACHMENT_LOAD_OP_CLEAR.
+
+6. Then declare , memset and inituialize VkRenderPassBeginInfo struct.
+7. Begin RenderPass by vkCmdBeginRenderPass() API.
+   Remember, the code writtrn inside "BeginRenderPass" and "EndRenderPass" itself is code for subpass , if no subpass is explicitly created.
+   In other words even if no subpass is declared explicitly , there is one subpass for renderpass.
+8. End the renderpass by calling vkCmdEndRenderpass.
+9. End the recording of commandbuffer by calling vkEndCommandBuffer() API.
+10. Close the loop.
+
+Note
+vkResetCommandBuffer -> https://registry.khronos.org/vulkan/specs/latest/man/html/vkResetCommandBuffer.html
+VkCommandBufferBeginInfo  -> https://registry.khronos.org/vulkan/specs/latest/man/html/VkCommandBufferBeginInfo.html
+vkBeginCommandBuffer -> https://registry.khronos.org/vulkan/specs/latest/man/html/vkBeginCommandBuffer.html
+VkClearValue  -> https://registry.khronos.org/vulkan/specs/latest/man/html/VkClearValue.html
+VkClearColorValue -> https://registry.khronos.org/vulkan/specs/latest/man/html/VkClearColorValue.html
+VkAttachmentDescription -> https://registry.khronos.org/vulkan/specs/latest/man/html/VkAttachmentDescription.html
+VkRenderPassBeginInfo -> https://registry.khronos.org/vulkan/specs/latest/man/html/VkRenderPassBeginInfo.html
+vkCmdBeginRenderPass -> https://registry.khronos.org/vulkan/specs/latest/man/html/vkCmdBeginRenderPass.html
+vkCmdEndRenderpass -> https://registry.khronos.org/vulkan/specs/latest/man/html/vkCmdEndRenderPass.html
+vkEndCommandBuffer -> https://registry.khronos.org/vulkan/specs/latest/man/html/vkEndCommandBuffer.html

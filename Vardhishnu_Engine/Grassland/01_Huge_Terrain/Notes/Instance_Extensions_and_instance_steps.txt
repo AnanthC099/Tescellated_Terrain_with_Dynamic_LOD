@@ -1,0 +1,52 @@
+Steps to get Instance extensions ?
+
+1. Find how many instance extensions are supported by Vulkan driver of/for this version and keept the count in a local variable.
+	1.3.296 madhe ek instance navta , je aata add zala aahe 1.4.304 madhe , VK_NV_DISPLAY_STEREO
+
+2. Allocate and fill struct VkExtensionProperties (https://registry.khronos.org/vulkan/specs/latest/man/html/VkExtensionProperties.html) structure array, corresponding to above count
+
+3. Fill and display a local string array of extension names obtained from VkExtensionProperties
+
+4. As not required here onwards, free VkExtensionProperties array
+
+5. Find whether above extension names contain our required two extensions
+VK_KHR_SURFACE_EXTENSION_NAME macro
+VK_KHR_WIN32_SURFACE_EXTENSION_NAME macro
+Accordingly set two global variables, "required extension count" and "required extension names array"
+
+6. As not needed hence forth , free local string array
+
+7. Print whether our Vulkan driver supports our required instance extension names or not (He log madhe yenar. Jithe print asel sarv log madhe yenar)
+
+8. Print only enabled extension names
+
+////////////////////////////////////////////////
+
+Steps for Instance creation ?
+
+Do this in initialize()
+1. As explained before fill and initialize required extension names and count in 2 respective global variables (Lasst 8 steps mhanje instance cha first step)
+2. Initialize struct VkApplicationInfo
+3. Initialize struct VkInstanceCreateInfo by using information from Step1 and Step2
+4. Call vkCreateInstance() to get VkInstance in a global variable and do error checking
+
+Do this in uninitialize()
+5. Destroy VkInstance in uninitialize()
+
+////////////////////////////////////////////////
+
+Extra facts 
+----------------> All struct, enums, types start with "Vk"  and all api's start with "vk"
+
+----------------> Why Vulkan is better performing than OpenGL?
+Because glewInit enables all extensions by default which hurts performance in OpenGL
+Vulkan tells to enable only those extensions which are to be used in our application
+Thus it is customizable and better performing than OpenGL
+
+----------------> Steps 7  and 8 look same , but they are not infact they are duplicated
+Step 7 prints whether extensions suported or not
+Step 8 prints only supported extension names
+
+----------------> One more fact
+VK_KHR_SURFACE_EXTENSION_NAME -> This is a macro which has value "VK_KHR_surface"
+VK_KHR_WIN32_SURFACE_EXTENSION_NAME -> This is a macro which has value "VK_KHR_win32_surface"

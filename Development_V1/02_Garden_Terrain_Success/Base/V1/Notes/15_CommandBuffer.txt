@@ -1,0 +1,12 @@
+1. Declare and initialize struct VkCommandBufferAllocateInfo (https://registry.khronos.org/vulkan/specs/latest/man/html/VkCommandBufferAllocateInfo.html)
+	The number of command buffers are coventionally equal to number of swapchain images.
+2. Declare command buffer array globally and allocate it to swapchain image count.
+3. In a loop , which is equal to swapchainImageCount, allocate each command buffer in above array by using vkAllocateCommandBuffers(). //https://registry.khronos.org/vulkan/specs/latest/man/html/vkAllocateCommandBuffers.html
+   Remember at time of allocation all commandbuffers will be empty.
+   Later we will record graphic/compute commands into them.
+4. In unitialize(), free each command buffer by using vkFreeCommandBuffers()(https://registry.khronos.org/vulkan/specs/latest/man/html/vkFreeCommandBuffers.html) in a loop of size swapchainImage count.
+5. Free actual command buffer array.
+
+Note:
+Secondary command buffer can be called from with primary command buffer
+Primary command buffer can be submitted.

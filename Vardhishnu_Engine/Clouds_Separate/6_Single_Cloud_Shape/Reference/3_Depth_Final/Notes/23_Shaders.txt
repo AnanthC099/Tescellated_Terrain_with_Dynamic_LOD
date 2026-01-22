@@ -1,0 +1,20 @@
+1. Write Shaders  and compile them to SPIRV using shader compilation tools that we receive in Vulkan SDK.
+2. Globally declate 2 shader object module variables of VkShaderModule type to hold Vulkan compatible vertex shader module object and fragment shader module object respectively.
+3. Declare prototype of UDF say CreateShaders() in initialize(), following a convention i.e after CreateVertexBuffer() and before CreateRenderPass().
+4. Using same above convention, call CreateShaders() between calls of above two.
+5. Maintaining the same baove convention while defining CreateShaders() between definition of above two.
+6. Inside our function, 
+first open shader file, 
+set the file pointer at end of file,
+find the byte size of shader file data,
+reset the file pointer at begining of the file,
+allocate a character buffer of file size and read Shader file data into it,
+and finally close the file.
+Do all these things using conventional fileIO.
+7. Declare and memset struct VkShaderModuleCreateInfo and specify above file size and buffer while initializing it.
+8. Call vkCreateShaderModule() Vulkan API, pass above struct's pointer to it as parameter and obtain shader module object in global variable, that we declared in Step 2.
+9. Free the ShaderCode buffer which we allocated in Step 6.
+10. Assuming we did above 4 steps 6 to 9 for Vertex Shader, Repeat them all for fragment shader too.
+11. In uninitialize , destroy both global shader objects using vkDestroyShaderModule() Vulkan API.
+
+ 

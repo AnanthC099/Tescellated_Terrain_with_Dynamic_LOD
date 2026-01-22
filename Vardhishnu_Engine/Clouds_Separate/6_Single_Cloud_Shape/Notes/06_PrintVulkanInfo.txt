@@ -1,0 +1,38 @@
+1. Remove local declaration of physicalDeviceCount and physicalDeviceArray from GetPhysicalDevice() and do it globally .
+2. Accordingly remove physicaldevicearray freeing block from if(bFound == VK_TRUE) block and we will later write this freeing block in printVkInfo().
+3. Write printVkInfo() user defined function with following steps
+
+3a. Start a loop using global physical device count and inside it declare  and memset VkPhysicalDeviceProperties struct variable (https://registry.khronos.org/vulkan/specs/latest/man/html/VkPhysicalDeviceProperties.html).
+3b. Initialize this struct variable by calling vkGetPhysicalDeviceProperties() (https://registry.khronos.org/vulkan/specs/latest/man/html/vkGetPhysicalDeviceProperties.html) vulkan api.
+3c. Print Vulkan API version using apiVersion member of above struct.
+	This requires 3 Vulkan macros.
+3d. Print device name by using "deviceName" member of above struct.
+3e. Use "deviceType" member of above struct in a switch case block and accordingly print device type.
+3f. Print hexadecimal Vendor Id of device using "vendorId" member of above struct.
+3g. Print hexadecimal deviceID of device using "deviceId" member of struct.
+Note*: For sake of completeness, we can repeat a to h points from GetPhysicalDevice() {05-GetPhysicalDevice notes},
+/*
+5. Start a loop using physical device count and physical device, array obtained above (Note: declare a boolean bFound variable before this loop which will decide whether we found desired physical device or not)
+	Inside this loop, 
+	a. Declare a local variable to hold queque count
+	b. Call vkGetPhysicalDeviceQuequeFamilyProperties() to initialize above queque count variable
+	c. Allocate VkQuequeFamilyProperties array according to above count
+	d. Call vkGetPhysicalDeviceQuequeFamilyProperties() again to fill above array
+	e. Declare VkBool32 type array and allocate it using the same above queque count
+	f. Start a nested loop and fill above VkBool32 type array by calling vkGetPhysicalDeviceSurfaceSupportKHR()
+	g. Start another nested loop(not inside above loop , but nested in main loop) and check whether physical device
+	   in its array with its queque family "has"(Sir told to underline) graphics bit or not. 
+	   If yes then this is a selected physical device and assign it to global variable. 
+	   Similarly this index is the selected queque family index and assign it to global variable too and set bFound to true
+	   and break out from second nested loop
+	h. Now we are back in main loop, so free queque family array and VkBool32 type array
+	i. Still being in main loop, acording to bFound variable break out from main loop
+	j. free physical device array 
+*/
+but now instead of assigning selected queque and selected device, print whether this device supports graphic bit, compute bit, transfer bit using if else if else if blocks
+Similarly we also can repeat device features from GetPhysicalDevice() and can print all around 50 plus device features including support to tescellation shader and geometry shader.
+3h. Free physicaldevice array here which we removed from if(bFound == VK_TRUE) block of GetPhysicalDevice().
+
+
+
+

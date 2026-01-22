@@ -1,0 +1,13 @@
+1. Globally declare Vulkan object of type VkDescriptorSetLayout and initialize it to VK_NULL_HANDLE.
+2. In initialize(), declare and call UDF CreateDescriptorSetLayout() maintaining the convention of declaring and calling it after CreateShaders() and before CreateRenderPass().
+3. While writing this UDF, declare, memset and initialize struct VkDescriptorSetLayoutCreateInfo, particularly its two members 
+   1. bindingCount
+   2. pBindings array
+4. Then call vkCreateDescriptorSetLayout() Vulkan API with adress of above initialized structure and get the required global Vulkan object vkDescriptorSetLayout in its last parameter.
+5. In uninitialize, call vkDestroyDescriptorSetlayout() Vulkan API to destroy this Vulkan object.
+
+Notes:
+VkDescriptor to create descriptor.
+VkDescriptorSet to create descriptor set.
+VkDescriptorSetLayoutBinding structure aat VkDescriptorSetLayout dya. 
+Binding ha count  ani pBinding madhe VkDescriptorSetLayout pass kara

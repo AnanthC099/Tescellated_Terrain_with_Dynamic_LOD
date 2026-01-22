@@ -1,0 +1,13 @@
+Steps for presentation surface
+
+1. Declare a global variable to hold presentation surface object
+	Note: VkXXX -> object , struct , enum
+
+2. Declare and memset a platform(Windows, Linux , Android etc) specific SurfaceInfoCreate structure
+
+3. Initialize it , particularly its HINSTANCE and HWND members
+
+4. Now call VkCreateWin32SurfaceKHR() to create the presentation surface object
+
+5. uninitialize resentation surface object
+

@@ -1,0 +1,9 @@
+This is same as logical device creation
+1. Create a user defined function say CreateVulKanDevice()
+2. Call previously created FillDeviceExtensionNames() in it.
+3. Declare and initialize VkDeviceCreateInfo structure (https://registry.khronos.org/vulkan/specs/latest/man/html/VkDeviceCreateInfo.html).
+4. Use previously obtained device extension count and device extension array to initialize this structure.
+5. Now call vkCreateDevice to create actual Vulkan device and do error checking.
+6. Destroy this device when done. {complementary api aahe}
+7. !!!!!!!!! Before destroying the device ensure that all operations on that device are finished!!!!!!!!! {synchronization related vakya}
+   Till then wait on that device.

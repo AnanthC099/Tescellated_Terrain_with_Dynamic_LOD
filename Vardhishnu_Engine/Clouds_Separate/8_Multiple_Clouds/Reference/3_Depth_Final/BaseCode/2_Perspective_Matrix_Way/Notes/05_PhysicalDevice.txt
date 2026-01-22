@@ -1,0 +1,62 @@
+Brief steps
+
+Physical device enumerate karaycha jasa apan instance extensions enumerate keli hoti ani count ghyaycha kiti devices aahet(instance extensions athva)
+Array declare karaycha physical devices cha , ani malloc karaycha ha count gheun
+Punha Second call karaycha same api la , ani tevda count cha physical device array madhe bharun ghyayche
+
+Till now same as instance extensions, But from now will be different
+
+Take a bool variable bDone ani ek loop establish karaycha physical device count ani array sathi
+Ek nashib aahe ki enumeration function addhich array bharte , mag loop ka lagta ?
+Loop device tharvayla lagnaar aahe
+So tya count itka loop establish karaycha, aat yaycha and aata steps aahet
+aplyakade array aahe devices cha, aata aplyala queque famuilies milvaychat
+tyamule queque familes milavnyacha quqque cha count declare karaycha ani queque family cha function parat ekda call karaycha fakt count sathi (ek single call)
+Mag count milala ki aaj ajun ek array declare karaycha queque family sathi
+Punha same queque familes api call karun array bharun ghyaycha
+mag loop cha aat ajun ek loop establish karaycha queque cha count sathi, pan aata kashi sathi karaycha tar te queque family cha milalela array aahe tyacha indices sathi
+
+Mag ajun ek loop establish karaycha jya madhe tya queque family cha indices aahet te milalela surface la support karta ka, he tharvayla punha loop takaycha
+ani loop cha aatlya dusra loop madhe, jo array milalela aahe devices cha , tya device cha surface tumhi je magta aahe queque cha flag la support karto ka
+To support karat asel tar tya index chi queque (queque index)  ani tyacha graphic card (selected graphic card) ani mag break karun baher ya
+OpenCL...
+
+Ajun ghol aahe, .. Check from recording
+
+Steps
+1. Declare 3 global variables , One for selected physical device, second for selected queque family index, third for physical devices memory properties(required later)
+2. Call vkEnumeratePhysicalDevices() to get Physical device count
+3. Allocate VkPhysicalDeviceArray object according to above count
+4. Call vkEnumeratePhysicalDevices() again to fill above array
+5. Start a loop using physical device count and physical device, array obtained above (Note: declare a boolean bFound variable before this loop which will decide whether we found desired physical device or not)
+	Inside this loop, 
+	a. Declare a local variable to hold queque count
+	b. Call vkGetPhysicalDeviceQuequeFamilyProperties() to initialize above queque count variable
+	c. Allocate VkQuequeFamilyProperties array according to above count
+	d. Call vkGetPhysicalDeviceQuequeFamilyProperties() again to fill above array
+	e. Declare VkBool32 type array and allocate it using the same above queque count
+	f. Start a nested loop and fill above VkBool32 type array by calling vkGetPhysicalDeviceSurfaceSupportKHR()
+	g. Start another nested loop(not inside above loop , but nested in main loop) and check whether physical device
+	   in its array with its queque family "has"(Sir told to underline) graphics bit or not. 
+	   If yes then this is a selected physical device and assign it to global variable. 
+	   Similarly this index is the selected queque family index and assign it to global variable too and set bFound to true
+	   and break out from second nested loop
+	h. Now we are back in main loop, so free queque family array and VkBool32 type array
+	i. Still being in main loop, acording to bFound variable break out from main loop
+	j. free physical device array 
+6. Do error checking according to value of bFound
+7. memset the global physical device memory property structure
+8. initialize above structure by using vkGetPhysicalDeviceMemoryProperties()
+9. Declare a local structure variable VkPhysicalDeviceFeatures, memset it  and initialize it by calling vkGetPhysicalDeviceFeatures()
+10. By using "tescellation shader" member of above structure check selected device's tescellation shader support
+11. By using "geometry shader" member of above structure check selected device's geometry shader support
+12. There is no need to free/uninitialize/destroy selected physical device?
+	Bcoz later we will create Vulkan logical device which need to be destroyed and its destruction will automatically destroy selected physical device.
+
+	   
+	
+
+
+
+ 
+

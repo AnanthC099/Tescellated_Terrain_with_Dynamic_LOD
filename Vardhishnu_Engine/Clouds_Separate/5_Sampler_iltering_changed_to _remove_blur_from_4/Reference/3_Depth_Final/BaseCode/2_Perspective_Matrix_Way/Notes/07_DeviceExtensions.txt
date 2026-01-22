@@ -1,0 +1,24 @@
+Using similar steps of getting Instance Extensions, we are going to retreive device extensions.
+Variable , structure and api names are going to change
+
+Steps to get Device extensions ?
+
+1. 1. Find how many device extensions are supported by Vulkan driver of/for this version and keept the count in a local variable.
+
+2. Allocate and fill struct VkExtensionProperties (https://registry.khronos.org/vulkan/specs/latest/man/html/VkExtensionProperties.html) structure array, corresponding to above count
+
+3. Fill and display a local string array of extension names obtained from VkExtensionProperties
+
+4. As not required here onwards, free VkExtensionProperties array
+
+5. Find whether above extension names contain our required two extensions
+VK_KHR_SWAPCHAIN_EXTENSION_NAME macro
+Accordingly set two global variables, "required extension count" and "required extension names array"
+
+6. As not needed hence forth , free local string array
+
+7. Print whether our Vulkan driver supports our required instance extension names or not (He log madhe yenar. Jithe print asel sarv log madhe yenar)
+
+8. Print only enabled extension names
+
+////////////////////////////////////////////////

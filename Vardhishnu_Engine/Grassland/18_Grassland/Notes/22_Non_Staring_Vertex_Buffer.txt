@@ -1,0 +1,50 @@
+1. Globally Declare a structure holding Vertex buffer related two things
+ a. VkBuffer Object
+ b. VkDeviceMemory Object
+	We will call it as struct VertexData and declare a global variable of this structure named vertexData_position.
+ 
+2. Declare User defined function CreateVertexBuffer().
+   Write its prototype below CreateCommandBuffers() and above CreateRenderPass() and also call it between the calls of these two.
+   
+3. Implement CreateVertexBuffer() and inside it first declare our triangle's position array.
+
+4. memset our global vertexData_position.
+
+5. Declare and memset VkBufferCreateInfo struct.
+   It has 8 members, we will use 5
+   Out of them, 2 are very important (Usage and Size)
+   
+6. Call vkCreateBuffer() vulkan API in the ".vkBuffer" member of our global struct
+
+7. Declare and member memset struct VkMemoryRequirements and then call vkGetBufferMemoryRequirements() API to get the memory requirements.
+
+8. To actually allocate the required memory, we need to call vkAllocateMemory().
+   But before that we need to declare and memset VkMemoryAllocateInfo structure.
+   Important members of this structure are ".memoryTypeIndex" and ".allocationSize".
+   For ".allocationSize", use the size obtained from vkGetBufferMemoryRequirements().
+   For ".memoryTypeIndex" : 
+   a. Start a loop with count as vkPkysicalDeviceMemoryProperties.memoryTypeCount.
+   b. Inside the loop check vkMemoryRequiremts.memoryTypeBits contain 1 or not.
+   c. If yes, Check vkPhysicalDeviceMemoryProperties.memeoryTypes[i].propertyFlags member contains enum VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT.
+   d. Then this ith index will be our ".memoryTypeIndex".
+	  If found, break out of the loop.
+   e. If not continue the loop by right shifting VkMemoryRequirements.memoryTypeBits by 1, over each iteration.
+   
+9. Now call vkAllocateMemory()  and get the required Vulkan memory objects handle into the ".vkDeviceMemory" member of put global structure.
+
+10. Now we have our required deviceMemory handle as well as VkBuffer Handle.
+	Bind this device memory handle to VkBuffer Handle by using vkBindBufferMemory().
+	Declare a void* buffer say "data" and call vkMapMemory() to map our device memory object handle to this void* buffer data.
+	
+11. This will allow us to do memory mapped IO means when we write on void* buffer data, it will get automatically written/copied on to device memory represented by device memory object handle.
+
+12. Now to do actual memory mapped IO, call memcpy.
+
+13. To complete this memory mapped IO. finally call vkUmmappedMemory() API.
+
+14. In uninitialize()
+First Free the ".vkDeviceMemory" memory of our global structure using vkFreeMemory() and then destroy ".vkBuffer" member of our global structure by using vkDestroyBuffer().
+	
+
+	
+   

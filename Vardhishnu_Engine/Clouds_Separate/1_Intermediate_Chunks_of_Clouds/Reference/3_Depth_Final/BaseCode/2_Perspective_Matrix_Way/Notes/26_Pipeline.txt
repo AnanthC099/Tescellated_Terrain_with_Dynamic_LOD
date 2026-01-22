@@ -1,0 +1,6 @@
+1. Declare, memset and initialize all structure's related to PSO and use previous setps values and objects needed to initialize them.
+2. Pipeline is created from Pipeline Cache.
+   So declare, memset and initialize VkPipelineCacheCreateInfo structure and create VkPipeline Cache by using vkPipelineCreateCache().
+3. Fill the whole VkGraphicsPipelineCreateInfo structure.
+4. Create the pipeline by vkCreateGraphicsPipelines().
+5. In uninitialize , clear pipeline.

@@ -1,0 +1,1035 @@
+#version 460 core
+// ============================================================================
+// VULKAN RAY TRACING ENABLED CLOUD COMPUTE SHADER
+// This shader uses GL_EXT_ray_query for hardware-accelerated shadow ray tracing
+// against the ground plane for accurate cloud-to-ground shadows.
+// ============================================================================
+
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Output storage image - write cloud render result here
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+
+// Uniforms for camera and time
+layout(binding = 1) uniform CloudParams {
+    vec4 cameraPos;         // xyz = position, w = time
+    vec4 sunDirection;      // xyz = normalized sun direction, w = unused
+    vec4 screenSize;        // xy = width/height, zw = unused
+    vec4 cameraForward;     // xyz = forward direction, w = unused
+    vec4 cameraRight;       // xyz = right direction, w = unused
+    vec4 cameraUp;          // xyz = up direction, w = fov (radians)
+} params;
+
+// Ray Tracing Acceleration Structure - Top Level AS containing scene geometry
+layout(binding = 2) uniform accelerationStructureEXT topLevelAS;
+
+// Constants for ray marching
+const int MAX_STEPS = 120;           // Steps for detail
+const float MAX_DIST = 120.0;        // Range for cloud volume
+const float STEP_SIZE_MIN = 0.15;    // Smaller min steps for finer detail
+const float STEP_SIZE_MAX = 0.8;     // Controlled max for quality
+const float CLOSE_DISTANCE = 25.0;   // Distance threshold for "close" clouds
+
+// Cloud layer parameters - Clouds above the camera in the sky
+const float CLOUD_BOTTOM = 9.5;     // Cloud base above camera (just below condensation level)
+const float CLOUD_TOP = 23.0;       // Cloud top (just above highest tower)
+const float CLOUD_COVERAGE = 0.45;  // Coverage within single cloud shape
+const float CLOUD_DENSITY = 0.85;   // Increased for more volumetric feel
+
+// Single centered cloud parameters - realistic cumulus shape
+const vec3 CLOUD_CENTER = vec3(0.0, 14.0, 0.0);  // Center of the single cloud (lowered for flat base)
+const float CLOUD_BASE_HEIGHT = 10.0;  // Flat condensation level base
+const float CLOUD_TOP_HEIGHT = 22.0;   // Top of cloud towers
+
+// Cumulus "puff" positions for cauliflower-like billowing tops
+// Each puff: xyz = offset from cloud center, w = radius
+const vec4 CLOUD_PUFFS[7] = vec4[7](
+    vec4(0.0, 2.0, 0.0, 6.0),      // Main central dome
+    vec4(-4.5, 4.5, -2.0, 4.5),    // Upper left tower
+    vec4(4.0, 3.5, -1.5, 4.0),     // Upper right tower
+    vec4(-2.0, 0.5, 3.5, 4.5),     // Front left bulge
+    vec4(3.0, 1.0, 3.0, 4.0),      // Front right bulge
+    vec4(0.0, 5.5, -3.0, 3.5),     // Back top tower
+    vec4(-5.0, -0.5, 0.0, 3.5)     // Left side bulge
+);
+
+// Realistic cloud color temperatures
+const vec3 CLOUD_WHITE = vec3(1.0, 0.99, 0.97);        // Slightly warm white
+const vec3 CLOUD_SHADOW = vec3(0.45, 0.50, 0.58);      // Cool blue-gray shadows
+const vec3 CLOUD_AMBIENT = vec3(0.70, 0.78, 0.92);     // Sky-lit ambient
+const vec3 SUN_COLOR = vec3(1.0, 0.92, 0.80);          // Warm sunlight
+
+// Constants
+const float PI = 3.14159265359;
+const float MPI = 3.14159265359;
+
+// ============================================================================
+// RAY TRACING SHADOW FUNCTION
+// Uses hardware ray queries to trace shadow rays against scene geometry
+// ============================================================================
+
+// Trace a shadow ray from a cloud point toward the sun
+// Returns 1.0 if fully lit, 0.0 if blocked by geometry
+float traceGroundShadow(vec3 origin, vec3 direction, float maxDistance) {
+    // Initialize ray query for shadow testing
+    rayQueryEXT rayQuery;
+
+    // Start the ray query
+    // Flags: terminate on first hit (shadow rays don't need closest hit)
+    rayQueryInitializeEXT(rayQuery, topLevelAS,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFF,           // Cull mask - hit all geometry
+        origin,         // Ray origin
+        0.001,          // Min t (avoid self-intersection)
+        direction,      // Ray direction
+        maxDistance);   // Max t
+
+    // Process the ray query
+    while (rayQueryProceedEXT(rayQuery)) {
+        // For shadow rays, we only care if we hit anything
+        // No need to evaluate hit shaders
+    }
+
+    // Check if we hit anything
+    if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        // Hit geometry - point is in shadow
+        return 0.0;
+    }
+
+    // No hit - point is lit
+    return 1.0;
+}
+
+// Enhanced ground shadow with soft penumbra
+// Traces multiple rays for soft shadow effect
+float traceGroundShadowSoft(vec3 origin, vec3 direction, float maxDistance) {
+    float shadow = 0.0;
+    const int NUM_SAMPLES = 4;
+
+    // Create a tangent space for jittering
+    vec3 up = abs(direction.y) < 0.99 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 right = normalize(cross(direction, up));
+    up = normalize(cross(right, direction));
+
+    // Jitter amount (sun angular radius approximation)
+    float jitterRadius = 0.02;
+
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+        // Create jittered direction
+        float angle = float(i) / float(NUM_SAMPLES) * 2.0 * PI;
+        vec3 jitter = (cos(angle) * right + sin(angle) * up) * jitterRadius;
+        vec3 jitteredDir = normalize(direction + jitter);
+
+        shadow += traceGroundShadow(origin, jitteredDir, maxDistance);
+    }
+
+    return shadow / float(NUM_SAMPLES);
+}
+
+// ============================================================================
+// OLAJOS-STYLE REMAP AND HEIGHT DISTRIBUTION FUNCTIONS
+// Based on Rikard Olajos's thesis "Real-Time Rendering of Volumetric Clouds"
+// ============================================================================
+
+// Remap function - linearly maps a value from one range to another
+float Remap(float original_value, float original_min, float original_max,
+            float new_min, float new_max) {
+    return new_min + (((original_value - original_min) /
+           (original_max - original_min)) * (new_max - new_min));
+}
+
+// Saturate helper (clamp 0-1)
+float saturate(float x) {
+    return clamp(x, 0.0, 1.0);
+}
+
+// Cloud types for Olajos height distribution
+const int CLOUD_TYPE_STRATUS = 0;
+const int CLOUD_TYPE_CUMULUS = 1;
+const int CLOUD_TYPE_CUMULONIMBUS = 2;
+
+// Olajos Height Distribution (HD) function
+float GetGradientHeightFactor(float height, int cloudtype) {
+    float timewidthup, starttimeup, starttimedown;
+
+    if (cloudtype == CLOUD_TYPE_STRATUS) {
+        timewidthup = 0.08;
+        starttimeup = 0.08;
+        starttimedown = 0.2;
+    } else if (cloudtype == CLOUD_TYPE_CUMULUS) {
+        timewidthup = 0.14;
+        starttimeup = 0.1;
+        starttimedown = 0.5;
+    } else {
+        timewidthup = 0.2;
+        starttimeup = 0.10;
+        starttimedown = 0.7;
+    }
+
+    float factor = 2.0 * MPI / (2.0 * timewidthup);
+    float density_gradient = 0.0;
+
+    if (height < starttimeup) {
+        density_gradient = 0.0;
+    } else if (height < starttimeup + timewidthup) {
+        density_gradient = 0.5 * sin(factor * height - MPI/2.0 -
+                           factor * starttimeup) + 0.5;
+    } else if (height < starttimedown) {
+        density_gradient = 1.0;
+    } else if (height < starttimedown + timewidthup) {
+        density_gradient = 0.5 * sin(factor * height - MPI/2.0 -
+                           factor * (starttimedown + timewidthup)) + 0.5;
+    } else {
+        density_gradient = 0.0;
+    }
+
+    return density_gradient;
+}
+
+float GetOlajosHeightGradient(float heightPercent, float heightAmount) {
+    return saturate(Remap(heightPercent, 0.0, 0.2, 0.0, 1.0)) *
+           saturate(Remap(heightAmount, 1.0, 0.7, 0.0, 1.0));
+}
+
+float GetDensityHeightGradientForPoint(float relativeHeight, float cloudTypeBlend) {
+    float cumulusGradient = GetGradientHeightFactor(relativeHeight, CLOUD_TYPE_CUMULUS);
+    float cumulonimbusGradient = GetGradientHeightFactor(relativeHeight, CLOUD_TYPE_CUMULONIMBUS);
+    return mix(cumulusGradient, cumulonimbusGradient, cloudTypeBlend);
+}
+
+// Tone mapping functions
+vec3 ACESFilm(vec3 x) {
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+vec3 ACESFilmExtended(vec3 x, float exposure) {
+    x *= exposure;
+    vec3 highlightCompress = x / (1.0 + x * 0.15);
+    x = mix(x, highlightCompress, smoothstep(1.0, 3.0, dot(x, vec3(0.333))));
+    float a = 2.51;
+    float b = 0.03;
+    float c = 2.43;
+    float d = 0.59;
+    float e = 0.14;
+    vec3 result = (x * (a * x + b)) / (x * (c * x + d) + e);
+    return clamp(result, 0.0, 1.0);
+}
+
+float softThreshold(float value, float threshold, float knee) {
+    float soft = value - threshold + knee;
+    soft = clamp(soft, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee + 0.00001);
+    return max(soft, value - threshold);
+}
+
+// Noise functions
+float hash(float n) {
+    return fract(sin(n) * 43758.5453123);
+}
+
+float hash3(vec3 p) {
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+}
+
+vec3 hash33(vec3 p) {
+    p = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
+             dot(p, vec3(269.5, 183.3, 246.1)),
+             dot(p, vec3(113.5, 271.9, 124.6)));
+    return fract(sin(p) * 43758.5453123);
+}
+
+float blueNoiseHash(vec2 p, float time) {
+    vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    float t = fract(time * 0.1);
+    return fract(magic.z * fract(dot(p + t, magic.xy)));
+}
+
+vec3 noiseGrad(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    vec3 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+
+    float n = i.x + i.y * 157.0 + 113.0 * i.z;
+
+    float a = hash(n + 0.0);
+    float b = hash(n + 1.0);
+    float c = hash(n + 157.0);
+    float d = hash(n + 158.0);
+    float e = hash(n + 113.0);
+    float f1 = hash(n + 114.0);
+    float g = hash(n + 270.0);
+    float h = hash(n + 271.0);
+
+    float k0 = a;
+    float k1 = b - a;
+    float k2 = c - a;
+    float k3 = e - a;
+    float k4 = a - b - c + d;
+    float k5 = a - c - e + g;
+    float k6 = a - b - e + f1;
+    float k7 = -a + b + c - d + e - f1 - g + h;
+
+    return vec3(
+        du.x * (k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z),
+        du.y * (k2 + k4 * u.x + k5 * u.z + k7 * u.x * u.z),
+        du.z * (k3 + k5 * u.y + k6 * u.x + k7 * u.x * u.y)
+    );
+}
+
+float noise3D(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+
+    float n = i.x + i.y * 157.0 + 113.0 * i.z;
+    return mix(
+        mix(mix(hash(n + 0.0), hash(n + 1.0), f.x),
+            mix(hash(n + 157.0), hash(n + 158.0), f.x), f.y),
+        mix(mix(hash(n + 113.0), hash(n + 114.0), f.x),
+            mix(hash(n + 270.0), hash(n + 271.0), f.x), f.y),
+        f.z);
+}
+
+vec3 curlNoise(vec3 p) {
+    const float e = 0.1;
+    vec3 dx = vec3(e, 0.0, 0.0);
+    vec3 dy = vec3(0.0, e, 0.0);
+    vec3 dz = vec3(0.0, 0.0, e);
+
+    return normalize(vec3(
+        noise3D(p + dy) - noise3D(p - dy) - noise3D(p + dz) + noise3D(p - dz),
+        noise3D(p + dz) - noise3D(p - dz) - noise3D(p + dx) + noise3D(p - dx),
+        noise3D(p + dx) - noise3D(p - dx) - noise3D(p + dy) + noise3D(p - dy)
+    ));
+}
+
+float fbm(vec3 p, int octaves) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    float totalAmplitude = 0.0;
+    float lacunarity = 2.1;
+    float persistence = 0.48;
+
+    for(int i = 0; i < octaves; i++) {
+        value += amplitude * noise3D(p * frequency);
+        totalAmplitude += amplitude;
+        amplitude *= persistence;
+        frequency *= lacunarity;
+    }
+
+    return value / totalAmplitude;
+}
+
+float fbmRidged(vec3 p, int octaves) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    float totalAmplitude = 0.0;
+    float prev = 1.0;
+
+    for(int i = 0; i < octaves; i++) {
+        float n = 1.0 - abs(noise3D(p * frequency) * 2.0 - 1.0);
+        n = n * n;
+        n *= prev;
+        prev = n;
+        value += amplitude * n;
+        totalAmplitude += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.2;
+    }
+
+    return value / totalAmplitude;
+}
+
+float microDetail(vec3 p, float distance) {
+    float closeness = 1.0 - smoothstep(0.0, CLOSE_DISTANCE, distance);
+    if (closeness < 0.01) return 0.0;
+
+    float micro1 = noise3D(p * 2.3) * 0.5;
+    float micro2 = noise3D(p * 4.7) * 0.25;
+    float micro3 = noise3D(p * 9.1) * 0.125;
+    float micro4 = noise3D(p * 17.3) * 0.0625;
+
+    return (micro1 + micro2 + micro3 + micro4) * closeness;
+}
+
+vec2 worley2(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+
+    float minDist1 = 1.0;
+    float minDist2 = 1.0;
+
+    for(int x = -1; x <= 1; x++) {
+        for(int y = -1; y <= 1; y++) {
+            for(int z = -1; z <= 1; z++) {
+                vec3 neighbor = vec3(float(x), float(y), float(z));
+                vec3 randomOffset = hash33(i + neighbor);
+                vec3 point = neighbor + randomOffset - f;
+                float dist = dot(point, point);
+
+                if(dist < minDist1) {
+                    minDist2 = minDist1;
+                    minDist1 = dist;
+                } else if(dist < minDist2) {
+                    minDist2 = dist;
+                }
+            }
+        }
+    }
+
+    return vec2(sqrt(minDist1), sqrt(minDist2));
+}
+
+float worley(vec3 p) {
+    return worley2(p).x;
+}
+
+float worleyEdge(vec3 p) {
+    vec2 w = worley2(p);
+    return w.y - w.x;
+}
+
+float billowNoise(vec3 p, int octaves) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    float totalAmplitude = 0.0;
+
+    for(int i = 0; i < octaves; i++) {
+        float n = abs(noise3D(p * frequency) * 2.0 - 1.0);
+        value += amplitude * n;
+        totalAmplitude += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+
+    return value / totalAmplitude;
+}
+
+float erosionNoise(vec3 p, float baseShape) {
+    float erosion1 = billowNoise(p * 0.5, 3) * 0.4;
+    float erosion2 = billowNoise(p * 1.2, 4) * 0.3;
+    float erosion3 = billowNoise(p * 2.5, 3) * 0.2;
+    float worleyErosion = worley(p * 0.8) * 0.25;
+
+    float totalErosion = erosion1 + erosion2 + erosion3 + worleyErosion;
+    float lowDensityBoost = 1.0 - smoothstep(0.0, 0.4, baseShape);
+    float edgeFactor = smoothstep(0.15, 0.4, baseShape) * (1.0 - smoothstep(0.4, 0.75, baseShape));
+    float erosionStrength = 0.6 + edgeFactor * 1.8 + lowDensityBoost * 1.2;
+
+    return totalErosion * erosionStrength;
+}
+
+vec3 domainWarp(vec3 p, float strength) {
+    float w1 = 0.013;
+    float w2 = 0.017;
+    float w3 = 0.011;
+    return p + strength * vec3(
+        fbm(p * w1, 3),
+        fbm(p * w2 + vec3(31.7, 0.0, 0.0), 3),
+        fbm(p * w3 + vec3(0.0, 0.0, 47.3), 3)
+    );
+}
+
+float powderEffect(float density, float powderStrength) {
+    float powder = 1.0 - exp(-density * 2.0);
+    return 1.0 + powderStrength * powder;
+}
+
+float phaseHG(float cosTheta, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5) * (4.0 * PI));
+}
+
+float phaseDualLobe(float cosTheta) {
+    float forward = phaseHG(cosTheta, 0.8);
+    float backward = phaseHG(cosTheta, -0.3);
+    return mix(forward, backward, 0.15);
+}
+
+float wrapLighting(float NdotL, float wrap) {
+    return max(0.0, (NdotL + wrap) / (1.0 + wrap));
+}
+
+float beerLambertTransmittance(float density, float opticalDepth) {
+    const float sigmaT = 1.5;
+    return exp(-sigmaT * density * opticalDepth);
+}
+
+// Cloud density function - STATIC version for realistic clouds without animation
+// Uses Olajos-style procedural generation with multi-octave noise
+float cloudDensity(vec3 p, float distance) {
+    // Height-based parameters
+    float relativeHeight = (p.y - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM);
+    relativeHeight = clamp(relativeHeight, 0.0, 1.0);
+
+    // Sample point with slight height-based wind shear (static offset)
+    vec3 samplePoint = p;
+    vec3 windDirection = vec3(1.0, 0.0, 0.3);
+    float cloudTopOffset = 5.0;
+    samplePoint += relativeHeight * windDirection * cloudTopOffset * 0.005;
+
+    // Domain warping for organic cloud shapes
+    vec3 warpedP = domainWarp(samplePoint, 12.0);
+
+    // Additional static warping for more natural shapes
+    warpedP += vec3(
+        noise3D(samplePoint * 0.02) * 4.0,
+        noise3D(samplePoint * 0.015 + vec3(17.3, 0.0, 0.0)) * 3.0,
+        noise3D(samplePoint * 0.018 + vec3(0.0, 31.7, 0.0)) * 4.0
+    );
+
+    // Base cloud shape using FBM
+    float perlinBase = fbm(warpedP * 0.06, 6);
+
+    // Worley noise warping for cellular structure
+    vec3 worleyWarp1 = warpedP + vec3(
+        noise3D(warpedP * 0.04) * 4.0,
+        noise3D(warpedP * 0.035 + vec3(17.3, 0.0, 0.0)) * 3.0,
+        noise3D(warpedP * 0.045 + vec3(0.0, 31.7, 0.0)) * 4.0
+    );
+
+    // Multi-octave inverted Worley for puffy cloud shapes
+    float worleyLow1 = 1.0 - worley(worleyWarp1 * 0.08);
+    float worleyLow2 = 1.0 - worley(worleyWarp1 * 0.12);
+    float worleyLow3 = 1.0 - worley(worleyWarp1 * 0.18);
+    float lowFreqFBM = worleyLow1 * 0.625 + worleyLow2 * 0.250 + worleyLow3 * 0.125;
+
+    // Combine Perlin and Worley for base shape
+    float baseCloud = Remap(perlinBase, -(1.0 - lowFreqFBM), 1.0, 0.0, 1.0);
+    baseCloud = saturate(baseCloud);
+
+    // Cloud type variation (cumulus vs cumulonimbus blend)
+    float cloudTypeVariation = fbm(warpedP * 0.02, 3);
+    float cloudTypeBlend = smoothstep(0.35, 0.65, cloudTypeVariation);
+    float densityHeightGradient = GetDensityHeightGradientForPoint(relativeHeight, cloudTypeBlend);
+    baseCloud = baseCloud * densityHeightGradient;
+
+    // Coverage with local variation
+    float cloudCoverage = CLOUD_COVERAGE;
+    float coverageNoise = fbm(warpedP * 0.03, 4);
+    float localCoverage = cloudCoverage + (coverageNoise - 0.5) * 0.3;
+    localCoverage = clamp(localCoverage, 0.1, 0.9);
+
+    // Realistic cumulus cloud shape with flat base and billowing tops
+
+    // 1. Flat base cutoff - cumulus clouds have sharp flat bottoms at condensation level
+    float baseCutoff = smoothstep(CLOUD_BASE_HEIGHT - 0.5, CLOUD_BASE_HEIGHT + 0.3, p.y);
+
+    // 2. Calculate distance to multiple "puffs" for cauliflower-like billowing structure
+    float puffInfluence = 0.0;
+    for (int i = 0; i < 7; i++) {
+        vec3 puffCenter = CLOUD_CENTER + CLOUD_PUFFS[i].xyz;
+        float puffRadius = CLOUD_PUFFS[i].w;
+
+        // Add noise-based displacement to each puff for organic variation
+        vec3 puffNoise = vec3(
+            noise3D(puffCenter * 0.1 + vec3(float(i) * 7.3, 0.0, 0.0)) - 0.5,
+            noise3D(puffCenter * 0.1 + vec3(0.0, float(i) * 11.7, 0.0)) - 0.5,
+            noise3D(puffCenter * 0.1 + vec3(0.0, 0.0, float(i) * 13.1)) - 0.5
+        ) * 1.5;
+        puffCenter += puffNoise;
+
+        // Distance to this puff (with slight vertical squash for flatter puffs)
+        vec3 toPuff = p - puffCenter;
+        toPuff.y *= 1.15;  // Slightly squash vertically
+        float distToPuff = length(toPuff);
+
+        // Smooth metaball-like falloff for each puff
+        float puffDensity = 1.0 - smoothstep(puffRadius * 0.5, puffRadius * 1.1, distToPuff);
+
+        // Add boundary noise for natural edges on each puff
+        float puffBoundaryNoise = fbm(p * 0.2 + vec3(float(i) * 5.0), 3) * 0.25;
+        puffDensity *= (1.0 + puffBoundaryNoise);
+
+        // Blend puffs together (soft union)
+        puffInfluence = max(puffInfluence, puffDensity);
+
+        // Also add some smooth blending between nearby puffs
+        puffInfluence += puffDensity * 0.15;
+    }
+    puffInfluence = saturate(puffInfluence);
+
+    // 3. Top falloff - gradual fade at cloud top
+    float topFalloff = 1.0 - smoothstep(CLOUD_TOP_HEIGHT - 3.0, CLOUD_TOP_HEIGHT, p.y);
+
+    // 4. Combine all shape factors
+    float cloudMask = puffInfluence * baseCutoff * topFalloff;
+
+    // Add large-scale noise to break up the overall shape
+    float shapeNoise = fbm(p * 0.08, 4) * 0.4 + 0.6;
+    cloudMask *= shapeNoise;
+
+    // Apply cloud mask
+    localCoverage *= cloudMask;
+
+    float baseCloudWithCoverage = Remap(baseCloud, localCoverage, 1.0, 0.0, 1.0);
+    baseCloudWithCoverage = saturate(baseCloudWithCoverage);
+    baseCloudWithCoverage *= localCoverage * 2.5;
+
+    // Smooth edges for the cloud shape
+    baseCloudWithCoverage *= smoothstep(0.0, 0.2, cloudMask);
+
+    float finalCloud = baseCloudWithCoverage;
+
+    // Add detail layers for clouds with density
+    if (baseCloudWithCoverage > 0.0) {
+        // Curl noise for turbulent edges (static)
+        vec3 curlOffset = curlNoise(samplePoint * 0.3);
+        vec3 detailSamplePoint = samplePoint + curlOffset * (1.0 - relativeHeight) * 0.6;
+
+        // High-frequency Worley for detail
+        vec3 worleyWarp2 = warpedP + vec3(
+            noise3D(warpedP * 0.055 + vec3(23.1, 0.0, 0.0)) * 3.5,
+            noise3D(warpedP * 0.05 + vec3(0.0, 41.2, 0.0)) * 2.5,
+            noise3D(warpedP * 0.06 + vec3(0.0, 0.0, 19.8)) * 3.5
+        );
+
+        float highFreq1 = 1.0 - worley(worleyWarp2 * 0.25);
+        float highFreq2 = 1.0 - worley(worleyWarp2 * 0.45);
+        float highFreq3 = 1.0 - worley(worleyWarp2 * 0.85);
+        float highFreqFBM = highFreq1 * 0.625 + highFreq2 * 0.250 + highFreq3 * 0.125;
+
+        float highFreqNoiseModifier = mix(highFreqFBM, 1.0 - highFreqFBM,
+                                          saturate(relativeHeight * 10.0));
+
+        // Erosion for realistic edges
+        float erosionStrength = 0.2 * highFreqNoiseModifier;
+        baseCloudWithCoverage = saturate(baseCloudWithCoverage - erosionStrength);
+
+        finalCloud = Remap(baseCloudWithCoverage, erosionStrength, 1.0, 0.0, 1.0);
+        finalCloud = saturate(finalCloud);
+
+        // Billow noise for puffy edges
+        float edgeRegion = smoothstep(0.2, 0.4, finalCloud) * (1.0 - smoothstep(0.5, 0.7, finalCloud));
+        float billow = billowNoise(warpedP * 0.18, 4);
+        finalCloud += billow * edgeRegion * 0.08;
+
+        // Ridged noise for dramatic structure
+        float ridgedNoise = fbmRidged(warpedP * 0.08, 4);
+        finalCloud += ridgedNoise * 0.05 * smoothstep(0.3, 0.6, finalCloud);
+
+        // Micro detail for close-up quality
+        float microNoise = microDetail(warpedP, distance);
+        finalCloud += microNoise * 0.04 * smoothstep(0.15, 0.4, finalCloud);
+    }
+
+    // Height gradient control (Olajos method)
+    float heightAmount = 1.0 - relativeHeight;
+    float heightGradientControl = GetOlajosHeightGradient(relativeHeight, heightAmount);
+    finalCloud *= mix(1.0, heightGradientControl, 0.3);
+
+    // Edge erosion for realistic cloud boundaries
+    float erosion = erosionNoise(warpedP * 0.12, finalCloud);
+    float erosionMask = smoothstep(0.15, 0.35, finalCloud) * (1.0 - smoothstep(0.5, 0.8, finalCloud));
+    finalCloud -= erosion * erosionMask * 0.2;
+
+    // Edge breakup for wispy boundaries
+    float edgeBreakup = billowNoise(warpedP * 0.35, 3);
+    float edgeWeight = 1.0 - smoothstep(0.0, 0.2, finalCloud);
+    finalCloud *= mix(1.0, edgeBreakup * 0.8 + 0.2, edgeWeight);
+
+    finalCloud = saturate(finalCloud);
+    return finalCloud * CLOUD_DENSITY;
+}
+
+float cloudDensity(vec3 p) {
+    return cloudDensity(p, MAX_DIST);
+}
+
+float calculateSelfShadow(vec3 p, vec3 lightDir, float baseDensity) {
+    float occlusion = 0.0;
+    float sampleDist = 0.25;
+    for(int i = 1; i <= 6; i++) {
+        vec3 samplePos = p + lightDir * sampleDist * float(i);
+        float sampleDensity = cloudDensity(samplePos);
+        float weight = exp(-float(i) * 0.4);
+        occlusion += sampleDensity * weight;
+    }
+
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(lightDir, up));
+    float lateralOcclusion = 0.0;
+    lateralOcclusion += cloudDensity(p + right * 0.4) * 0.3;
+    lateralOcclusion += cloudDensity(p - right * 0.4) * 0.3;
+    lateralOcclusion += cloudDensity(p + up * 0.4) * 0.4;
+
+    occlusion = occlusion * 0.7 + lateralOcclusion * 0.3;
+    return exp(-occlusion * 2.5);
+}
+
+vec3 getHeightAmbient(float height, vec3 baseAmbient) {
+    float heightNorm = clamp((height - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM), 0.0, 1.0);
+
+    vec3 skyTop = vec3(0.65, 0.78, 0.98);
+    vec3 skyMid = vec3(0.55, 0.65, 0.85);
+    vec3 groundBounce = vec3(0.35, 0.38, 0.42);
+
+    vec3 verticalAmbient;
+    if (heightNorm < 0.3) {
+        verticalAmbient = mix(groundBounce, skyMid, heightNorm / 0.3);
+    } else {
+        verticalAmbient = mix(skyMid, skyTop, (heightNorm - 0.3) / 0.7);
+    }
+
+    return mix(verticalAmbient, baseAmbient, 0.4);
+}
+
+vec3 getCloudBaseColor(float density, float heightNorm, float lightAmount) {
+    vec3 brightCloud = CLOUD_WHITE;
+    vec3 midCloud = vec3(0.95, 0.95, 0.94);
+    vec3 shadowColor = CLOUD_SHADOW;
+    vec3 thinEdge = vec3(1.0, 0.98, 0.95);
+
+    float thinness = 1.0 - smoothstep(0.1, 0.5, density);
+    vec3 baseColor = mix(midCloud, thinEdge, thinness * 0.3);
+    baseColor = mix(baseColor, brightCloud, heightNorm * 0.15);
+
+    return baseColor;
+}
+
+vec2 rayCloudIntersect(vec3 ro, vec3 rd) {
+    float tBottom = (CLOUD_BOTTOM - ro.y) / rd.y;
+    float tTop = (CLOUD_TOP - ro.y) / rd.y;
+
+    float tMin = min(tBottom, tTop);
+    float tMax = max(tBottom, tTop);
+    tMin = max(tMin, 0.0);
+
+    if(tMin > tMax || tMax < 0.0) {
+        return vec2(-1.0);
+    }
+
+    return vec2(tMin, tMax);
+}
+
+// ============================================================================
+// RAY TRACING ENHANCED LIGHT MARCH
+// Uses hardware ray queries for ground shadow detection
+// ============================================================================
+vec2 lightMarchMultiScatterRT(vec3 p, float localDensity) {
+    // Preserve original sample position for ground-shadow test
+    // (p gets modified during light march below)
+    vec3 p0 = p;
+
+    vec3 lightDir = normalize(params.sunDirection.xyz);
+    float totalDensity = 0.0;
+    float inScatter = 0.0;
+    float stepSize = 0.3;
+    float startHeight = smoothstep(CLOUD_BOTTOM, CLOUD_TOP, p.y);
+
+    for(int i = 0; i < 20; i++) {
+        p += lightDir * stepSize;
+        if(p.y > CLOUD_TOP) break;
+
+        float density = cloudDensity(p);
+        float sampleHeight = smoothstep(CLOUD_BOTTOM, CLOUD_TOP, p.y);
+        float creviceFactor = 1.0 + (1.0 - sampleHeight) * 0.6;
+        totalDensity += density * stepSize * creviceFactor;
+
+        float trans = exp(-totalDensity * 0.8);
+        inScatter += density * trans * stepSize;
+        stepSize *= 1.1;
+    }
+
+    // Use RT shadow for ground occlusion (shadows cast onto ground)
+    // This adds proper contact shadows when clouds are near the ground
+    // Use original sample position (p0) since p has been advanced through the light march
+    float groundShadow = 1.0;
+    if (p0.y < CLOUD_BOTTOM + 5.0) {
+        // Trace toward ground to detect shadow casting
+        vec3 toGround = vec3(0.0, -1.0, 0.0);
+        groundShadow = traceGroundShadow(p0, toGround, p0.y);
+    }
+
+    float extinction = mix(1.6, 1.1, startHeight);
+    float transmittance = exp(-totalDensity * extinction) * mix(1.0, groundShadow, 0.3);
+    inScatter = 1.0 - exp(-inScatter * 2.0);
+
+    return vec2(transmittance, inScatter);
+}
+
+float getAdaptiveStepSize(float distance) {
+    float t = smoothstep(0.0, CLOSE_DISTANCE * 2.0, distance);
+    return mix(STEP_SIZE_MIN, STEP_SIZE_MAX, t);
+}
+
+float getAdaptiveAlphaMultiplier(float distance) {
+    float closeness = 1.0 - smoothstep(0.0, CLOSE_DISTANCE, distance);
+    return mix(5.5, 3.5, closeness);
+}
+
+// Cloud rendering result structure
+struct CloudResult {
+    vec4 color;           // RGB + alpha
+};
+
+// Main ray marching with RT shadow support
+CloudResult raymarchCloudsRT(vec3 ro, vec3 rd, vec3 skyColor, vec2 pixelCoord) {
+    CloudResult result;
+    result.color = vec4(0.0);
+
+    vec2 tRange = rayCloudIntersect(ro, rd);
+
+    if(tRange.x < 0.0) {
+        return result;
+    }
+
+    // Apply blue noise jitter for smoother results
+    float jitter = blueNoiseHash(pixelCoord, params.cameraPos.w);
+    float t = tRange.x + jitter * STEP_SIZE_MIN;
+    float tEnd = min(tRange.y, MAX_DIST);
+
+    float totalWeight = 0.0;
+    float weightedDistance = 0.0;
+
+    vec3 lightDir = normalize(params.sunDirection.xyz);
+    float cosTheta = dot(rd, lightDir);
+
+    float phaseForward = phaseHG(cosTheta, 0.85);
+    float phaseBack = phaseHG(cosTheta, -0.35);
+    float phaseMid = phaseHG(cosTheta, 0.5);
+    float phase = phaseForward * 0.65 + phaseBack * 0.15 + phaseMid * 0.20;
+    phase = clamp(phase, 0.0, 3.0);
+
+    float viewingTowardSun = max(0.0, cosTheta);
+    float viewingAwaySun = max(0.0, -cosTheta);
+    float viewingSide = 1.0 - abs(cosTheta);
+
+    for(int i = 0; i < MAX_STEPS; i++) {
+        if(t > tEnd || result.color.a > 0.99) break;
+
+        vec3 p = ro + rd * t;
+        float currentDistance = length(p - ro);
+        float stepSize = getAdaptiveStepSize(currentDistance);
+        float density = cloudDensity(p, currentDistance);
+
+        if(density > 0.002) {
+            float heightNorm = clamp((p.y - CLOUD_BOTTOM) / (CLOUD_TOP - CLOUD_BOTTOM), 0.0, 1.0);
+
+            // Use RT-enhanced light march
+            vec2 lightResult = lightMarchMultiScatterRT(p, density);
+            float lightTransmittance = lightResult.x;
+            float inScatter = lightResult.y;
+
+            float selfShadow = calculateSelfShadow(p, lightDir, density);
+            vec3 cloudColor = getCloudBaseColor(density, heightNorm, lightTransmittance);
+            vec3 heightAmbient = getHeightAmbient(p.y, CLOUD_AMBIENT);
+
+            float ambientOcclusion = mix(0.45, 1.0, selfShadow);
+            vec3 ambient = heightAmbient * 0.55 * ambientOcclusion;
+
+            float shadowAmount = 1.0 - lightTransmittance;
+            vec3 skyFill = vec3(0.55, 0.65, 0.85) * shadowAmount * 0.18;
+            ambient += skyFill;
+
+            float baseOcclusion = smoothstep(0.0, 0.25, heightNorm);
+            ambient *= mix(0.4, 1.0, baseOcclusion);
+
+            float wrappedLight = wrapLighting(heightNorm, 0.35);
+            float directIntensity = lightTransmittance * selfShadow;
+            directIntensity *= mix(0.65, 1.0, wrappedLight);
+            vec3 direct = SUN_COLOR * directIntensity * 1.25;
+
+            vec3 lighting = ambient + direct;
+
+            float powder = powderEffect(density, 0.7);
+            vec3 forwardScatter = SUN_COLOR * phase * lightTransmittance * powder * 0.5;
+            lighting += forwardScatter;
+
+            vec3 multiScatter = SUN_COLOR * inScatter * 0.25;
+            lighting += multiScatter * (1.0 - lightTransmittance * 0.5);
+
+            float thinness = 1.0 - smoothstep(0.05, 0.35, density);
+            float silverLining = pow(viewingSide, 3.0) * thinness;
+            lighting += vec3(1.0, 0.98, 0.94) * silverLining * lightTransmittance * 0.35;
+
+            float sss = thinness * viewingAwaySun * powder;
+            lighting += SUN_COLOR * sss * lightTransmittance * 0.45;
+
+            float rimLight = thinness * pow(viewingSide, 2.5);
+            lighting += vec3(1.0, 0.97, 0.92) * rimLight * lightTransmittance * 0.25;
+
+            float topBoost = heightNorm * lightTransmittance * viewingTowardSun;
+            lighting += vec3(1.0, 0.98, 0.95) * topBoost * 0.15;
+
+            float shadowDepth = (1.0 - lightTransmittance) * (1.0 - selfShadow);
+            vec3 shadowTint = mix(vec3(1.0), CLOUD_SHADOW, shadowDepth * 0.6);
+            lighting *= shadowTint;
+
+            vec3 sampledColor = cloudColor * lighting;
+            sampledColor = min(sampledColor, vec3(1.5));
+
+            float alphaMultiplier = getAdaptiveAlphaMultiplier(currentDistance);
+            float alpha = 1.0 - exp(-density * stepSize * alphaMultiplier);
+
+            result.color.rgb += sampledColor * alpha * (1.0 - result.color.a);
+            result.color.a += alpha * (1.0 - result.color.a);
+
+            weightedDistance += currentDistance * alpha;
+            totalWeight += alpha;
+        }
+
+        t += stepSize;
+    }
+
+    // Aerial perspective
+    if(totalWeight > 0.001 && result.color.a > 0.001) {
+        float avgDistance = weightedDistance / totalWeight;
+
+        const float HAZE_START = 20.0;
+        const float HAZE_MID = 50.0;
+        const float HAZE_END = 100.0;
+        const float MAX_HAZE = 0.75;
+
+        float nearHaze = smoothstep(HAZE_START, HAZE_MID, avgDistance) * 0.4;
+        float farHaze = smoothstep(HAZE_MID, HAZE_END, avgDistance) * 0.6;
+        float hazeFactor = (nearHaze + farHaze) * MAX_HAZE;
+
+        vec3 luminance = vec3(dot(result.color.rgb, vec3(0.299, 0.587, 0.114)));
+        float contrastReduction = hazeFactor * 0.5;
+        result.color.rgb = mix(result.color.rgb, luminance, contrastReduction);
+
+        vec3 blueShift = vec3(0.7, 0.8, 1.0);
+        result.color.rgb *= mix(vec3(1.0), blueShift, hazeFactor * 0.3);
+
+        vec3 hazeColor = mix(skyColor, vec3(0.85, 0.9, 0.95), 0.4);
+        result.color.rgb = mix(result.color.rgb, hazeColor * result.color.a, hazeFactor * 0.55);
+
+        float alphaFade = 1.0 - hazeFactor * 0.35;
+        result.color.a *= alphaFade;
+
+        float horizonFactor = 1.0 - abs(rd.y);
+        float horizonHaze = horizonFactor * hazeFactor * 0.2;
+        result.color.rgb = mix(result.color.rgb, skyColor * result.color.a, horizonHaze);
+    }
+
+    return result;
+}
+
+vec3 getSkyColor(vec3 rd) {
+    float t = 0.5 * (rd.y + 1.0);
+    t = clamp(t, 0.0, 1.0);
+
+    float horizonGradient = pow(t, 0.5);
+    float zenithGradient = pow(t, 1.2);
+    float blendedGradient = mix(horizonGradient, zenithGradient, t);
+
+    vec3 horizonColor = vec3(0.6, 0.78, 0.95);
+    vec3 midSkyColor = vec3(0.4, 0.6, 0.9);
+    vec3 zenithColor = vec3(0.15, 0.4, 0.85);
+
+    vec3 sky;
+    if(blendedGradient < 0.3) {
+        float horizonT = blendedGradient / 0.3;
+        sky = mix(horizonColor, midSkyColor, horizonT);
+    } else {
+        float zenithT = (blendedGradient - 0.3) / 0.7;
+        sky = mix(midSkyColor, zenithColor, zenithT);
+    }
+
+    vec3 sunDir = normalize(params.sunDirection.xyz);
+    float sunDot = max(dot(rd, sunDir), 0.0);
+
+    float sunAtmosphere = pow(sunDot, 2.0) * 0.08;
+    sky += vec3(1.0, 0.95, 0.9) * sunAtmosphere;
+
+    float sunCorona = pow(sunDot, 8.0) * 0.12;
+    sky += vec3(1.0, 0.92, 0.8) * sunCorona;
+
+    sky += vec3(1.0, 0.95, 0.85) * pow(sunDot, 128.0) * 0.5;
+    sky += vec3(1.0, 0.9, 0.75) * pow(sunDot, 32.0) * 0.18;
+
+    float horizonBrightness = pow(1.0 - abs(rd.y), 8.0) * 0.15;
+    sky += vec3(0.9, 0.92, 0.95) * horizonBrightness;
+
+    float sunSideHorizon = max(0.0, dot(vec3(rd.x, 0.0, rd.z), vec3(sunDir.x, 0.0, sunDir.z)));
+    sky += vec3(1.0, 0.9, 0.8) * sunSideHorizon * horizonBrightness * 0.5;
+
+    return sky;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 screenSize = params.screenSize.xy;
+
+    if(pixelCoord.x >= int(screenSize.x) || pixelCoord.y >= int(screenSize.y)) {
+        return;
+    }
+
+    // Calculate UV and NDC coordinates
+    vec2 uv = (vec2(pixelCoord) + 0.5) / screenSize;
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    float aspectRatio = screenSize.x / screenSize.y;
+    ndc.x *= aspectRatio;
+
+    vec3 cameraPos = params.cameraPos.xyz;
+    vec3 forward = normalize(params.cameraForward.xyz);
+    vec3 right = normalize(params.cameraRight.xyz);
+    vec3 up = normalize(params.cameraUp.xyz);
+
+    float fovRadians = params.cameraUp.w;
+    float fov = tan(fovRadians * 0.5);
+
+    vec3 rayDir = normalize(forward + ndc.x * right * fov + ndc.y * up * fov);
+
+    vec3 skyColor = getSkyColor(rayDir);
+
+    // Use RT-enhanced ray marching
+    CloudResult cloudResult = raymarchCloudsRT(cameraPos, rayDir, skyColor, vec2(pixelCoord));
+
+    vec3 finalColor = mix(skyColor, cloudResult.color.rgb, cloudResult.color.a);
+
+    // Bloom
+    float luminance = dot(finalColor, vec3(0.299, 0.587, 0.114));
+    float bloomThreshold = 0.75;
+    float bloomKnee = 0.1;
+    float bloomAmount = softThreshold(luminance, bloomThreshold, bloomKnee);
+
+    float bloomIntensity1 = bloomAmount * 0.12;
+    float bloomIntensity2 = bloomAmount * 0.08;
+
+    vec3 bloomColor = finalColor * (1.0 + bloomIntensity1);
+    vec3 warmBloom = vec3(1.0, 0.97, 0.92) * bloomIntensity2;
+    bloomColor += warmBloom;
+
+    vec3 sunDir = normalize(params.sunDirection.xyz);
+    float sunInfluence = max(0.0, dot(rayDir, sunDir));
+    float sunBloom = pow(sunInfluence, 3.0) * bloomAmount * 0.15;
+    bloomColor += vec3(1.0, 0.95, 0.85) * sunBloom;
+
+    float horizonInfluence = pow(1.0 - abs(rayDir.y), 4.0);
+    bloomColor += vec3(1.0, 0.9, 0.75) * horizonInfluence * bloomAmount * 0.08;
+
+    finalColor = bloomColor;
+
+    // Tone mapping
+    float exposure = 1.1;
+    finalColor = ACESFilmExtended(finalColor, exposure);
+
+    float brightness = max(max(finalColor.r, finalColor.g), finalColor.b);
+    if(brightness > 0.95) {
+        float desatAmount = smoothstep(0.95, 1.0, brightness) * 0.1;
+        vec3 gray = vec3(dot(finalColor, vec3(0.299, 0.587, 0.114)));
+        finalColor = mix(finalColor, gray, desatAmount);
+    }
+
+    finalColor = pow(finalColor, vec3(1.0/2.2));
+
+    float dither = blueNoiseHash(vec2(pixelCoord), params.cameraPos.w) * 0.004 - 0.002;
+    finalColor += dither;
+
+    finalColor = clamp(finalColor, vec3(0.0), vec3(1.0));
+    imageStore(outputImage, pixelCoord, vec4(finalColor, 1.0));
+}

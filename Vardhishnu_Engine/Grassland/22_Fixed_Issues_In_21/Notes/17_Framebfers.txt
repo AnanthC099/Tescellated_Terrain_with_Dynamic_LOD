@@ -1,0 +1,5 @@
+1. Declare an array of VkImageView (https://registry.khronos.org/vulkan/specs/latest/man/html/VkImageView.html) equal to number of attachments i.e in our example array of member.
+2. Declare and initialize VkFramebufferCreateInfo structure (https://registry.khronos.org/vulkan/specs/latest/man/html/VkFramebufferCreateInfo.html).
+   Allocate the framebuffer array by malloc eqal size to swapchainImageCount.
+   Start loop for  swapchainImageCount and call vkCreateFramebuffer() (https://registry.khronos.org/vulkan/specs/latest/man/html/vkCreateFramebuffer.html) to create framebuffers.
+3. In unitialize destroy framebuffers in a loop for swapchainImageCount.   
